@@ -11,7 +11,7 @@
   "packageManager": "pnpm@11.25.0",
   "scripts": {
     "dev": "pnpm generate:content && pnpm --filter @pianio/web dev",
-    "build": "pnpm generate:content && pnpm --filter @pianio/web build",
+    "build": "pnpm generate:content && pnpm --filter @pianio/web build && node scripts/prepare-site.mjs",
     "typecheck": "pnpm --filter @pianio/web typecheck",
     "test": "pnpm --filter @pianio/midi-web test && pnpm --filter @pianio/core-engine test && pnpm test:playback",
     "generate:content": "node ./scripts/generate-content.mjs",
