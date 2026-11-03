@@ -1498,7 +1498,7 @@ p { margin-bottom: 0; }
     0 0 0 1px rgba(59, 154, 178, 0.10);
 }
 
-.score-viewer { width: 100%; }
+.score-viewer { width: 100%; position: relative; }
 
 .score-placeholder,
 .score-loading {
@@ -2067,7 +2067,7 @@ p { margin-bottom: 0; }
   transition: background var(--transition-fast), border-color var(--transition-fast), color var(--transition-fast);
 }
 .preview-btn:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
-.preview-btn.previewing { opacity: 0.6; cursor: default; }
+.preview-btn.previewing { opacity: 0.8; cursor: pointer; }
 
 /* ── Practice bar progress fill ── */
 

@@ -76,7 +76,9 @@ test("matches the normalized expected sequence in order", () => {
     matched: 3,
     missed: 0,
     extra: 0,
-    wrongNotes: 0
+    wrongNotes: 0,
+    velocityScore: null,
+    pedalScore: null
   });
 });
 
@@ -98,7 +100,9 @@ test("wrong notes do not advance the matcher and are tracked separately", () => 
     matched: 1,
     missed: 1,
     extra: 0,
-    wrongNotes: 1
+    wrongNotes: 1,
+    velocityScore: null,
+    pedalScore: null
   });
 });
 
@@ -116,7 +120,9 @@ test("extra notes after completion are counted without rewinding progress", () =
     matched: 1,
     missed: 0,
     extra: 1,
-    wrongNotes: 0
+    wrongNotes: 0,
+    velocityScore: null,
+    pedalScore: null
   });
 });
 
@@ -134,6 +140,8 @@ test("note-off messages are ignored", () => {
     matched: 0,
     missed: 1,
     extra: 0,
-    wrongNotes: 0
+    wrongNotes: 0,
+    velocityScore: null,
+    pedalScore: null
   });
 });

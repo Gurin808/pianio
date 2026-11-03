@@ -1,9 +1,10 @@
 import { useEffect, useRef, useState } from "react";
 import { OpenSheetMusicDisplay } from "opensheetmusicdisplay";
+import { scoreStepAtBeat } from "../playbackTiming";
 
 interface ScoreViewerProps {
   scorePath: string;
-  matchedCount: number;
+  targetBeat: number | null;
 }
 
 type LoadState = "idle" | "loading" | "ready" | "error";
@@ -12,10 +13,12 @@ const ZOOM_MIN = 0.5;
 const ZOOM_MAX = 1.8;
 const ZOOM_STEP = 0.15;
 
-export function ScoreViewer({ scorePath, matchedCount }: ScoreViewerProps) {
+export function ScoreViewer({ scorePath, targetBeat }: ScoreViewerProps) {
+  const targetBeatRef = useRef(targetBeat);
+  targetBeatRef.current = targetBeat;
   const containerRef = useRef<HTMLDivElement>(null);
   const osmdRef = useRef<OpenSheetMusicDisplay | null>(null);
-  const noteStepMapRef = useRef<number[]>([]);
+  const noteStepMapRef = useRef<Array<{ beat: number; step: number }>>([]);
   const currentCursorStepRef = useRef<number>(0);
 
   const [loadState, setLoadState] = useState<LoadState>("idle");
@@ -27,11 +30,12 @@ export function ScoreViewer({ scorePath, matchedCount }: ScoreViewerProps) {
   const rerender = (osmd: OpenSheetMusicDisplay, zoomLevel: number) => {
     osmd.zoom = zoomLevel;
     osmd.render();
-    osmd.cursor.show();
     osmd.cursor.reset();
     for (let i = 0; i < currentCursorStepRef.current; i++) {
       if (!osmd.cursor.Iterator.EndReached) osmd.cursor.next();
     }
+    if (targetBeatRef.current === null) osmd.cursor.hide();
+    else osmd.cursor.show();
   };
 
   // Main effect: load and render score when scorePath changes
@@ -102,7 +106,7 @@ export function ScoreViewer({ scorePath, matchedCount }: ScoreViewerProps) {
         osmd.cursor.show();
 
         // Build noteStepMap by stepping through cursor positions
-        const noteStepMap: number[] = [];
+        const noteStepMap: Array<{ beat: number; step: number }> = [];
         let stepCount = 0;
 
         osmd.cursor.reset();
@@ -110,7 +114,7 @@ export function ScoreViewer({ scorePath, matchedCount }: ScoreViewerProps) {
         while (!osmd.cursor.Iterator.EndReached) {
           const notes = osmd.cursor.NotesUnderCursor();
           if (notes.length > 0 && notes.some((n) => !n.isRest())) {
-            noteStepMap.push(stepCount);
+            noteStepMap.push({ step: stepCount, beat: osmd.cursor.Iterator.CurrentSourceTimestamp.RealValue * 4 });
           }
           stepCount++;
           if (!osmd.cursor.Iterator.EndReached) {
@@ -125,7 +129,7 @@ export function ScoreViewer({ scorePath, matchedCount }: ScoreViewerProps) {
         currentCursorStepRef.current = 0;
 
         if (noteStepMap.length > 0) {
-          const target = noteStepMap[0];
+          const target = noteStepMap[0].step;
           for (let i = 0; i < target; i++) {
             if (!osmd.cursor.Iterator.EndReached) {
               osmd.cursor.next();
@@ -193,7 +197,7 @@ export function ScoreViewer({ scorePath, matchedCount }: ScoreViewerProps) {
 
     const noteStepMap = noteStepMapRef.current;
 
-    if (matchedCount >= noteStepMap.length) {
+    if (targetBeat === null || noteStepMap.length === 0) {
       // Exercise complete — hide cursor
       osmd.cursor.hide();
       return;
@@ -201,7 +205,7 @@ export function ScoreViewer({ scorePath, matchedCount }: ScoreViewerProps) {
 
     osmd.cursor.show();
 
-    const target = noteStepMap[matchedCount];
+    const target = scoreStepAtBeat(noteStepMap, targetBeat);
     const current = currentCursorStepRef.current;
 
     if (target === current) {
@@ -228,7 +232,7 @@ export function ScoreViewer({ scorePath, matchedCount }: ScoreViewerProps) {
       }
       currentCursorStepRef.current = target;
     }
-  }, [matchedCount, loadState]);
+  }, [targetBeat, loadState, zoom]);
 
   return (
     <div className="score-viewer-wrap">

@@ -1183,7 +1183,7 @@ export default function App() {
 
   useEffect(() => {
     const handler = () => {
-      startAudio();
+      void startAudio().catch(() => { /* Explicit playback controls report audio errors. */ });
       document.removeEventListener("click", handler);
       document.removeEventListener("touchstart", handler);
     };

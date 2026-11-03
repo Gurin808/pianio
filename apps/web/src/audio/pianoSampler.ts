@@ -1,4 +1,5 @@
 import * as Tone from "tone";
+import { meterTiming, swingBeat } from "../playbackTiming.ts";
 
 const SALAMANDER_URLS = {
   A0: "A0.mp3", C1: "C1.mp3", "D#1": "Ds1.mp3", "F#1": "Fs1.mp3",
@@ -42,6 +43,7 @@ export async function startAudio(): Promise<void> {
   await Tone.start();
   getSampler();
   getBackgroundSampler();
+  await Tone.loaded();
 }
 
 let metronomeLoop: Tone.Loop | null = null;
@@ -58,16 +60,17 @@ function getMetronomeSynth(): Tone.Synth {
   return metronomeSynth;
 }
 
-export function startMetronome(bpm: number): void {
+export function startMetronome(bpm: number, signature: readonly number[] = [4, 4]): void {
   stopMetronome();
   Tone.getTransport().bpm.value = bpm;
   const synth = getMetronomeSynth();
+  const meter = meterTiming(bpm, signature);
   let beat = 0;
   metronomeLoop = new Tone.Loop((time) => {
     const freq = beat === 0 ? "C6" : "G5";
     synth.triggerAttackRelease(freq, "32n", time);
-    beat = (beat + 1) % 4;
-  }, "4n");
+    beat = (beat + 1) % meter.pulses;
+  }, meter.pulseSeconds);
   metronomeLoop.start(0);
   Tone.getTransport().start();
 }
@@ -79,6 +82,8 @@ export function stopMetronome(): void {
     metronomeLoop = null;
   }
   Tone.getTransport().stop();
+  Tone.getTransport().position = 0;
+  metronomeSynth?.triggerRelease(Tone.immediate());
 }
 
 export function playNote(midiNote: number): void {
@@ -86,7 +91,7 @@ export function playNote(midiNote: number): void {
   if (!s.loaded) return;
   try {
     const noteName = Tone.Frequency(midiNote, "midi").toNote();
-    s.triggerAttack(noteName, Tone.now());
+    s.triggerAttack(noteName, Tone.immediate());
   } catch {
     // ignore if note is out of range
   }
@@ -97,7 +102,7 @@ export function releaseNote(midiNote: number): void {
   if (!s.loaded) return;
   try {
     const noteName = Tone.Frequency(midiNote, "midi").toNote();
-    s.triggerRelease(noteName, Tone.now());
+    s.triggerRelease(noteName, Tone.immediate());
   } catch {
     // ignore
   }
@@ -141,63 +146,72 @@ export function playChord(midiNotes: number[]): void {
   }
 }
 
-/**
- * Start a metronome-synced count-in for performance mode.
- * Clicks on each beat using the Transport, calls onCountBeat with remaining beats,
- * then calls onStart exactly on the downbeat after count-in.
- * The metronome continues ticking during and after the piece.
- */
-export function startPerformanceCountIn(
-  bpm: number,
-  countInBeats: number,
-  onCountBeat: (remaining: number) => void,
-  onStart: () => void
-): void {
-  stopMetronome();
-  Tone.getTransport().bpm.value = bpm;
-  const synth = getMetronomeSynth();
-  let beat = 0;
-
-  metronomeLoop = new Tone.Loop((time) => {
-    const freq = beat % 4 === 0 ? "C6" : "G5";
-    synth.triggerAttackRelease(freq, "32n", time);
-
-    const currentBeat = beat;
-    Tone.getDraw().schedule(() => {
-      if (currentBeat < countInBeats) {
-        onCountBeat(countInBeats - currentBeat);
-      }
-      if (currentBeat === countInBeats) {
-        onStart();
-      }
-    }, time);
-
-    beat++;
-  }, "4n");
-
-  metronomeLoop.start(0);
-  Tone.getTransport().start();
-}
-
 export interface ScheduledNote {
   noteNumber: number;
+  noteNumbers?: number[];
   startBeat: number;
   durationBeats: number;
 }
 
-export function scheduleExercisePlayback(notes: readonly ScheduledNote[], bpm: number): void {
+let playbackPart: Tone.Part | null = null;
+let playbackGeneration = 0;
+
+/** Dispose scheduled future notes as well as releasing notes already sounding. */
+export function stopExercisePlayback(): void {
+  playbackGeneration++;
+  playbackPart?.dispose();
+  playbackPart = null;
+  stopMetronome();
+  backgroundSampler?.releaseAll(Tone.immediate());
+  sampler?.releaseAll(Tone.immediate());
+}
+
+function createPlaybackPart(notes: readonly ScheduledNote[], bpm: number, offset: number, swing: boolean) {
   const s = getBackgroundSampler();
   const beatS = 60 / bpm;
-  const now = Tone.now();
+  const generation = playbackGeneration;
+  playbackPart = new Tone.Part((time, note: ScheduledNote) => {
+    if (generation !== playbackGeneration) return;
+    const pitches = (note.noteNumbers ?? [note.noteNumber]).map(n => Tone.Frequency(n, "midi").toNote());
+    s.triggerAttackRelease(pitches, Math.max(0.05, note.durationBeats * beatS), time);
+  }, notes.map(note => ({ time: offset + swingBeat(note.startBeat, swing) * beatS, ...note })));
+  playbackPart.start(0);
+}
 
-  for (const note of notes) {
-    const startS = note.startBeat * beatS;
-    const durationS = Math.max(0.1, note.durationBeats * beatS);
-    try {
-      const noteName = Tone.Frequency(note.noteNumber, "midi").toNote();
-      s.triggerAttackRelease(noteName, durationS, now + startS);
-    } catch {
-      // ignore out-of-range notes
-    }
-  }
+export function scheduleExercisePlayback(notes: readonly ScheduledNote[], bpm: number, swing = false): void {
+  stopExercisePlayback();
+  createPlaybackPart(notes, bpm, 0, swing);
+  Tone.getTransport().start(Tone.now());
+}
+
+/** Audio, count-in, and grading share a predetermined downbeat, before MIDI arrives. */
+export function startPerformanceCountIn(
+  notes: readonly ScheduledNote[],
+  bpm: number,
+  signature: readonly number[],
+  audible: boolean,
+  swing: boolean,
+  onCountBeat: (remaining: number) => void,
+  onStart: () => void,
+): number {
+  stopExercisePlayback();
+  const generation = playbackGeneration;
+  const meter = meterTiming(bpm, signature);
+  const audioStart = Tone.now() + 0.05;
+  const pieceStartMs = performance.now() + (audioStart + meter.countInSeconds - Tone.immediate()) * 1000;
+  createPlaybackPart(notes, bpm, meter.countInSeconds, swing);
+  let beat = 0;
+  const synth = getMetronomeSynth();
+  metronomeLoop = new Tone.Loop((time) => {
+    if (audible) synth.triggerAttackRelease(beat % meter.pulses === 0 ? "C6" : "G5", 0.04, time);
+    const currentBeat = beat++;
+    Tone.getDraw().schedule(() => {
+      if (generation !== playbackGeneration) return;
+      if (currentBeat < meter.pulses) onCountBeat(meter.pulses - currentBeat);
+      if (currentBeat === meter.pulses) onStart();
+    }, time);
+  }, meter.pulseSeconds);
+  metronomeLoop.start(0);
+  Tone.getTransport().start(audioStart);
+  return pieceStartMs;
 }

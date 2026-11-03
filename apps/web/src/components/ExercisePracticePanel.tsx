@@ -4,8 +4,8 @@ import { ScoreViewer } from "./ScoreViewer";
 import { PianoKeyboard } from "./PianoKeyboard";
 import { markExerciseComplete } from "../progress";
 import confetti from "canvas-confetti";
-import { Check, X as XIcon, Play, ArrowRight, RotateCcw, ChevronDown } from "lucide-react";
-import { playNote, releaseNote, startAudio, scheduleExercisePlayback, startMetronome, stopMetronome, startPerformanceCountIn } from "../audio/pianoSampler";
+import { Check, X as XIcon, Play, ArrowRight, RotateCcw, ChevronDown, Square } from "lucide-react";
+import { playNote, releaseNote, startAudio, scheduleExercisePlayback, startMetronome, stopMetronome, startPerformanceCountIn, stopExercisePlayback } from "../audio/pianoSampler";
 import {
   createPracticeExpectedSequence,
   createPracticeMatcher,
@@ -27,6 +27,8 @@ import {
   type MidiInputSummary,
   type ParsedMidiEvent
 } from "@pianio/midi-web";
+
+import { meterTiming, swingBeat, findPerformanceHit, performanceCursorBeat, PERFORMANCE_WINDOW_MS } from "../playbackTiming";
 
 const STAR_PATH = "M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z";
 
@@ -78,7 +80,7 @@ function createSessionState(sequence: PracticeExpectedSequence): PracticeSession
 
 export function ExercisePracticePanel({ exercise, courseId, nextExerciseHref, courseHref, onComplete, resetRef }: { exercise: CatalogExercise; courseId: string; nextExerciseHref?: string; courseHref?: string; onComplete?: () => void; resetRef?: React.MutableRefObject<(() => void) | null> }) {
   const sequence = createPracticeExpectedSequence(exercise.expectedNotes);
-  const beatsPerMeasure = exercise.timeSignature[0];
+  const beatsPerMeasure = meterTiming(exercise.tempoBpm, exercise.timeSignature).measureBeats;
   const totalMeasures = Math.max(1, Math.ceil(
     exercise.expectedNotes.reduce((max, n) => Math.max(max, n.startBeat + n.durationBeats), 0) / beatsPerMeasure
   ));
@@ -130,7 +132,7 @@ export function ExercisePracticePanel({ exercise, courseId, nextExerciseHref, co
 
   type PerformPhase = "idle" | "counting-in" | "playing" | "complete";
   const [performPhase, setPerformPhase] = useState<PerformPhase>("idle");
-  const [countBeat, setCountBeat] = useState<number>(4);
+  const [countBeat, setCountBeat] = useState<number>(exercise.timeSignature[0]);
   const [performHits, setPerformHits] = useState<Set<number>>(new Set());
   const performHitsRef = useRef<Set<number>>(new Set());
   const playbackStartRef = useRef<number>(0);
@@ -138,7 +140,33 @@ export function ExercisePracticePanel({ exercise, courseId, nextExerciseHref, co
   const performWrongRef = useRef<number>(0);
   const performVelocityRef = useRef<{ correct: number; total: number }>({ correct: 0, total: 0 });
   const performPedalRef = useRef<{ correct: number; total: number }>({ correct: 0, total: 0 });
-  const [performCursorIndex, setPerformCursorIndex] = useState(0);
+  const [performCursorBeat, setPerformCursorBeat] = useState<number | null>(exercise.expectedNotes[0]?.startBeat ?? null);
+  const runIdRef = useRef(0);
+  const performPhaseRef = useRef<PerformPhase>("idle");
+  const completionTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const setPhase = (phase: PerformPhase) => {
+    performPhaseRef.current = phase;
+    setPerformPhase(phase);
+  };
+  const cancelPlayback = () => {
+    runIdRef.current++;
+    if (accessState === "requesting") setAccessState(cachedMidiAccessState);
+    if (completionTimerRef.current) clearTimeout(completionTimerRef.current);
+    if (previewTimerRef.current) clearTimeout(previewTimerRef.current);
+    if (autoLoopTimerRef.current) clearTimeout(autoLoopTimerRef.current);
+    stopExercisePlayback();
+    setIsPreviewing(false);
+    setMetronomeOn(false);
+  };
+
+  useEffect(() => () => {
+    runIdRef.current++;
+    if (completionTimerRef.current) clearTimeout(completionTimerRef.current);
+    if (previewTimerRef.current) clearTimeout(previewTimerRef.current);
+    if (wrongNoteTimerRef.current) clearTimeout(wrongNoteTimerRef.current);
+    if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
+    stopExercisePlayback();
+  }, []);
   const performRafRef = useRef<number | null>(null);
 
   useEffect(() => {
@@ -154,28 +182,41 @@ export function ExercisePracticePanel({ exercise, courseId, nextExerciseHref, co
     resetPerformance();
   }, [exercise.id]);
 
-  const handlePreview = async () => {
-    if (isPreviewing) return;
-    await startAudio();
+  const handlePreview = async (restart = false) => {
+    if (isPreviewing && !restart) { resetPerformance(); return; }
+    resetPerformance();
+    const run = runIdRef.current;
     setIsPreviewing(true);
+    try { await startAudio(); }
+    catch (error) {
+      if (run === runIdRef.current) { setIsPreviewing(false); showToast("Could not load piano audio. Please retry."); }
+      return;
+    }
+    if (run !== runIdRef.current) return;
     const bpm = exercise.tempoBpm * tempoMultiplier;
-    scheduleExercisePlayback(exercise.expectedNotes, bpm);
-    const beatMs = 60000 / bpm;
+    scheduleExercisePlayback(exercise.expectedNotes, bpm, exercise.swing);
     const lastNoteEndMs = exercise.expectedNotes.reduce(
-      (max, n) => Math.max(max, (n.startBeat + n.durationBeats) * beatMs),
-      0
+      (max, n) => Math.max(max, (swingBeat(n.startBeat, exercise.swing) + n.durationBeats) * 60000 / bpm), 0,
     );
-    previewTimerRef.current = setTimeout(() => setIsPreviewing(false), lastNoteEndMs + 800);
+    previewTimerRef.current = setTimeout(() => {
+      if (run !== runIdRef.current) return;
+      stopExercisePlayback();
+      setIsPreviewing(false);
+    }, lastNoteEndMs + 800);
   };
 
   useEffect(() => {
+    let cancelled = false;
+    if (performPhase === "counting-in" || performPhase === "playing" || isPreviewing) return;
     if (metronomeOn) {
-      startAudio().then(() => startMetronome(exercise.tempoBpm * tempoMultiplier));
+      startAudio().then(() => {
+        if (!cancelled) startMetronome(exercise.tempoBpm * tempoMultiplier, exercise.timeSignature);
+      }).catch(() => { if (!cancelled) showToast("Could not start metronome audio."); });
     } else {
       stopMetronome();
     }
-    return () => { stopMetronome(); };
-  }, [metronomeOn, exercise.tempoBpm, tempoMultiplier]);
+    return () => { cancelled = true; stopMetronome(); };
+  }, [metronomeOn, exercise.id, exercise.tempoBpm, tempoMultiplier, performPhase, isPreviewing]);
 
   // Advance score cursor in real-time during performance playback
   useEffect(() => {
@@ -188,8 +229,7 @@ export function ExercisePracticePanel({ exercise, courseId, nextExerciseHref, co
     }
     const tick = () => {
       const elapsed = performance.now() - playbackStartRef.current;
-      const count = expectedTimesRef.current.filter((n) => n.timeMs <= elapsed).length;
-      setPerformCursorIndex(count);
+      setPerformCursorBeat(performanceCursorBeat(exercise.expectedNotes, elapsed, exercise.tempoBpm * tempoMultiplier, exercise.swing));
       performRafRef.current = requestAnimationFrame(tick);
     };
     performRafRef.current = requestAnimationFrame(tick);
@@ -282,25 +322,15 @@ export function ExercisePracticePanel({ exercise, courseId, nextExerciseHref, co
       });
     } else if (
       mode === "performance" &&
-      performPhase === "playing" &&
+      (performPhaseRef.current === "playing" || performPhaseRef.current === "counting-in") &&
       event.type === "note-on" &&
       event.velocity > 0
     ) {
       const elapsedMs = event.timestamp - playbackStartRef.current;
-      const WINDOW_MS = 350;
-
-      let bestIndex = -1;
-      let bestDelta = Infinity;
-
-      for (const expected of expectedTimesRef.current) {
-        if (performHitsRef.current.has(expected.index)) continue;
-        if (expected.noteNumber !== event.note) continue;
-        const delta = Math.abs(elapsedMs - expected.timeMs);
-        if (delta < WINDOW_MS && delta < bestDelta) {
-          bestDelta = delta;
-          bestIndex = expected.index;
-        }
-      }
+      // Ignore warm-up notes until the first note's normal early window opens.
+      const firstTime = expectedTimesRef.current[0]?.timeMs ?? 0;
+      if (elapsedMs < firstTime - PERFORMANCE_WINDOW_MS) return;
+      const bestIndex = findPerformanceHit(expectedTimesRef.current, performHitsRef.current, event.note, elapsedMs);
 
       if (bestIndex >= 0) {
         performHitsRef.current.add(bestIndex);
@@ -367,11 +397,13 @@ export function ExercisePracticePanel({ exercise, courseId, nextExerciseHref, co
   };
 
   const resetPerformance = () => {
-    setPerformPhase("idle");
-    setCountBeat(4);
+    cancelPlayback();
+    setPhase("idle");
+    playbackStartRef.current = Infinity;
+    setCountBeat(exercise.timeSignature[0]);
     performHitsRef.current = new Set();
     setPerformHits(new Set());
-    setPerformCursorIndex(0);
+    setPerformCursorBeat(exercise.expectedNotes[0]?.startBeat ?? null);
     performWrongRef.current = 0;
     performVelocityRef.current = { correct: 0, total: 0 };
     performPedalRef.current = { correct: 0, total: 0 };
@@ -405,42 +437,44 @@ export function ExercisePracticePanel({ exercise, courseId, nextExerciseHref, co
   });
 
   const startPerformance = async () => {
-    // Ensure audio is started
-    await startAudio();
-
-    // Request MIDI access if not already granted
+    // Invalidate prior playback, scheduled callbacks, and pending audio/MIDI setup.
+    const audible = metronomeOn;
+    resetPerformance();
+    setShowCelebration(false);
+    const run = runIdRef.current;
+    setMetronomeOn(audible);
+    setPhase("counting-in");
+    try { await startAudio(); }
+    catch (error) {
+      if (run === runIdRef.current) { resetPerformance(); showToast("Could not load piano audio. Please retry."); }
+      return;
+    }
+    if (run !== runIdRef.current) return;
     if (accessState !== "granted") {
       setAccessState("requesting");
       setLastError(null);
       try {
         const midiAccess = await requestMidiAccess();
+        if (run !== runIdRef.current) return;
         cachedMidiAccess = midiAccess;
         cachedMidiAccessState = "granted";
         setAccess(midiAccess);
         setAccessState("granted");
       } catch (err) {
+        if (run !== runIdRef.current) return;
         setLastError(err instanceof Error ? err.message : "MIDI unavailable");
         setAccessState("error");
-        // Continue anyway — user can still hear the piece
       }
     }
-
+    if (run !== runIdRef.current) return;
     const bpm = exercise.tempoBpm * tempoMultiplier;
     const beatMs = 60000 / bpm;
-    const countInBeats = 4;
-    const countInMs = countInBeats * beatMs;
 
     // Precompute expected note times (ms from piece start), expanding chords
-    // Swing: off-beat eighths (fractional beat = 0.5) shift from 50% to ~67% of beat
-    const swingBeat = (sb: number) => {
-      if (!exercise.swing) return sb;
-      const frac = sb - Math.floor(sb);
-      return Math.abs(frac - 0.5) < 0.001 ? Math.floor(sb) + 2 / 3 : sb;
-    };
     const expanded: Array<{ noteNumber: number; timeMs: number; index: number; dynamicMarking?: string; pedalState?: string | null }> = [];
     let expandIdx = 0;
     for (const note of exercise.expectedNotes) {
-      const timeMs = swingBeat(note.startBeat) * beatMs;
+      const timeMs = swingBeat(note.startBeat, exercise.swing) * beatMs;
       if (note.noteNumbers) {
         for (const nn of note.noteNumbers) {
           expanded.push({ noteNumber: nn, timeMs, index: expandIdx++, dynamicMarking: note.dynamicMarking, pedalState: note.pedalState });
@@ -455,48 +489,31 @@ export function ExercisePracticePanel({ exercise, courseId, nextExerciseHref, co
     performHitsRef.current = freshHits;
     setPerformHits(freshHits);
 
-    // Shared logic: start the piece after count-in
-    const beginPlayback = () => {
-      playbackStartRef.current = performance.now();
-      setPerformPhase("playing");
-      scheduleExercisePlayback(exercise.expectedNotes, bpm);
-      const lastNoteEndMs = exercise.expectedNotes.reduce((max, note) => {
-        return Math.max(max, (note.startBeat + note.durationBeats) * beatMs);
-      }, 0);
-      setTimeout(() => {
-        stopMetronome();
-        setPerformPhase("complete");
-        const hits = performHitsRef.current.size;
-        const total = expectedTimesRef.current.length;
-        const wrongs = performWrongRef.current;
-        // Penalize wrong/extra notes: effective = hits - wrongs, clamped to 0
-        const effective = Math.max(0, hits - wrongs);
-        const pct = total > 0 ? Math.round((effective / total) * 100) : 0;
-        const stars: 1 | 2 | 3 = pct >= 95 ? 3 : pct >= 75 ? 2 : 1;
-        markExerciseComplete(courseId, exercise.slug, stars);
-        setCelebrationStars(stars);
-        setCelebrationMode("performance");
-        setShowCelebration(true);
-        confetti({ particleCount: stars === 3 ? 150 : 80, spread: 70, origin: { y: 0.6 } });
-        onComplete?.();
-      }, lastNoteEndMs + 1500);
-    };
-
-    // Start count-in — synced to metronome transport when metro is on
-    setPerformPhase("counting-in");
-    setCountBeat(countInBeats);
-
-    if (metronomeOn) {
-      // Transport-synced: count-in clicks ARE metronome beats, playback starts on the downbeat
-      startPerformanceCountIn(bpm, countInBeats, setCountBeat, beginPlayback);
-    } else {
-      // Standalone: setTimeout-based count-in (no clicks)
-      for (let i = countInBeats; i >= 1; i--) {
-        const delay = (countInBeats - i) * beatMs;
-        setTimeout(() => setCountBeat(i), delay);
-      }
-      setTimeout(beginPlayback, countInMs);
-    }
+    // Establish the downbeat now so the final count-in accepts early MIDI hits.
+    playbackStartRef.current = startPerformanceCountIn(
+      exercise.expectedNotes, bpm, exercise.timeSignature, audible, !!exercise.swing,
+      (remaining) => { if (run === runIdRef.current) setCountBeat(remaining); },
+      () => { if (run === runIdRef.current) setPhase("playing"); },
+    );
+    const lastNoteEndMs = exercise.expectedNotes.reduce((max, note) =>
+      Math.max(max, (swingBeat(note.startBeat, exercise.swing) + note.durationBeats) * beatMs), 0);
+    completionTimerRef.current = setTimeout(() => {
+      if (run !== runIdRef.current) return;
+      stopExercisePlayback();
+      setMetronomeOn(false);
+      setPhase("complete");
+      setPerformCursorBeat(null);
+      const hits = performHitsRef.current.size;
+      const total = expectedTimesRef.current.length;
+      const pct = total > 0 ? Math.round(Math.max(0, hits - performWrongRef.current) / total * 100) : 0;
+      const stars: 1 | 2 | 3 = pct >= 95 ? 3 : pct >= 75 ? 2 : 1;
+      markExerciseComplete(courseId, exercise.slug, stars);
+      setCelebrationStars(stars);
+      setCelebrationMode("performance");
+      setShowCelebration(true);
+      confetti({ particleCount: stars === 3 ? 150 : 80, spread: 70, origin: { y: 0.6 } });
+      onComplete?.();
+    }, Math.max(0, playbackStartRef.current - performance.now()) + lastNoteEndMs + 1500);
   };
 
   const nextExpected = getNextPracticeExpectedEvent(session.matcherState);
@@ -551,17 +568,30 @@ export function ExercisePracticePanel({ exercise, courseId, nextExerciseHref, co
         <button
           className={`preview-btn${isPreviewing ? " previewing" : ""}`}
           type="button"
-          onClick={handlePreview}
-          disabled={isPreviewing}
+          onClick={() => void handlePreview()}
+          disabled={performPhase === "counting-in" || performPhase === "playing"}
           title="Hear the exercise played through"
         >
-          {isPreviewing ? <><Play size={13} /> Listening…</> : <><Play size={13} /> Preview</>}
+          {isPreviewing ? <><Square size={13} /> Stop preview</> : <><Play size={13} /> Preview</>}
+        </button>
+      </div>
+
+      <div className="perform-controls" style={{ flexDirection: "row", gap: "0.5rem", marginBottom: "0.75rem" }}>
+        <button className="reset-btn" type="button" onClick={handleReset}>
+          <Square size={13} /> Stop
+        </button>
+        <button className="reset-btn" type="button" onClick={() => {
+          if (isPreviewing) void handlePreview(true);
+          else if (mode === "performance") void startPerformance();
+          else handleReset();
+        }}>
+          <RotateCcw size={13} /> Restart
         </button>
       </div>
 
       <ScoreViewer
         scorePath={exercise.scorePath}
-        matchedCount={mode === "practice" ? session.matcherState.nextEventIndex : performCursorIndex}
+        targetBeat={mode === "practice" ? nextExpected?.startBeat ?? null : performCursorBeat}
       />
 
       <div className="keyboard-area">
