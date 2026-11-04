@@ -13,9 +13,10 @@
     "dev": "pnpm generate:content && pnpm --filter @pianio/web dev",
     "build": "pnpm generate:content && pnpm --filter @pianio/web build && node scripts/prepare-site.mjs",
     "typecheck": "pnpm --filter @pianio/web typecheck",
-    "test": "pnpm --filter @pianio/midi-web test && pnpm --filter @pianio/core-engine test && pnpm test:playback",
+    "test": "pnpm --filter @pianio/midi-web test && pnpm --filter @pianio/core-engine test && pnpm test:playback && pnpm test:progress",
     "generate:content": "node ./scripts/generate-content.mjs",
     "deploy": "pnpm build && firebase deploy --only hosting",
+    "test:progress": "node --test apps/web/src/progressTransfer.test.ts",
     "test:playback": "node --experimental-test-module-mocks --test apps/web/src/playbackTiming.test.ts apps/web/src/audio/pianoSampler.test.ts"
   },
   "devDependencies": {

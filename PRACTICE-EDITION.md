@@ -26,6 +26,23 @@ Manual checks on Chrome/Edge with a wired MIDI keyboard:
 3. Play a piece with chords, ties, rests, and both hands; check the indicator through zoom and window resizing.
 4. Enable Metro on 3/4 and 6/8 exercises. Verify the count-in length, accent cycle, and click spacing match the displayed meter.
 
+## Progress transfer safeguards
+
+Progress has a backup/import panel even with no completed exercises. Choosing a file only
+previews it. The complete version-1 format is validated before writes, including exercise IDs,
+star ratings and real calendar dates. Unknown exercise IDs are retained.
+
+Import defaults to merging completed exercises and practice dates, retaining the highest stars.
+Replacing remains available but needs a separate warning confirmation. Both modes require a
+backup download and an acknowledgement that it was saved. A raw pre-import snapshot is stored
+under `pianio:before_import` before any collections are changed. If backup storage fails, the
+import aborts. A partial write triggers rollback of all three progress collections; a rollback
+failure is reported explicitly. Do not delete the downloaded backup.
+
+Progress files and browser snapshots stay on the device. No import crosses browser origins
+by itself. The transfer tests cover validation, merge, replacement, backup failure, partial-write
+rollback, absent keys, existing corrupt records, unknown exercise IDs and rollback failure.
+
 ## Curriculum scope
 
 The content supplies progressive drills and repertoire, but its numbered levels are internal, not exam grades. Completing exercises is not evidence of relaxed technique, good fingering, articulation, phrasing, or readiness for advanced repertoire. Use technique demonstrations and occasional human feedback alongside MIDI practice.

@@ -1,6 +1,7 @@
 import { lazy, Suspense, useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import type { CatalogCourse, CatalogExercise, GeneratedCatalog } from "@pianio/content-schema";
-import { getBestStars, getCompletedCount, getCompletedSlugs, getPracticeStreak, isExerciseComplete, recordPracticeDay, exportProgress, importProgress, resetProgress } from "./progress";
+import { ProgressTransfer } from "./components/ProgressTransfer";
+import { getBestStars, getCompletedCount, getCompletedSlugs, getPracticeStreak, isExerciseComplete, recordPracticeDay, resetProgress } from "./progress";
 import { describeMidiSupport } from "@pianio/midi-web";
 import { startAudio } from "./audio/pianoSampler";
 import { DiagnosticsScreen } from "./screens/DiagnosticsScreen";
@@ -968,7 +969,6 @@ function ProgressScreen({ catalog, progressVersion, onImport }: { catalog: Gener
   const groups = groupCourses(catalog.courses);
   const resumeTarget = getResumeTarget(catalog);
   const streak = getPracticeStreak();
-  const [importMsg, setImportMsg] = useState<string | null>(null);
   const [confirmReset, setConfirmReset] = useState(false);
 
   const handleReset = () => {
@@ -981,25 +981,6 @@ function ProgressScreen({ catalog, progressVersion, onImport }: { catalog: Gener
     onImport(); // triggers progressVersion bump to re-render
   };
 
-  const handleImport = () => {
-    const input = document.createElement("input");
-    input.type = "file";
-    input.accept = "application/json,.json";
-    input.onchange = () => {
-      const file = input.files?.[0];
-      if (!file) return;
-      const reader = new FileReader();
-      reader.onload = (e) => {
-        const result = importProgress(e.target?.result as string);
-        setImportMsg(result.message);
-        if (result.ok) onImport();
-        setTimeout(() => setImportMsg(null), 4000);
-      };
-      reader.readAsText(file);
-    };
-    input.click();
-  };
-
   const firstMethodCourse = catalog.courses.find(c => c.id.startsWith("method"));
   const firstExerciseHref = firstMethodCourse
     ? getExerciseHref(firstMethodCourse.id, firstMethodCourse.exercises[0].slug)
@@ -1007,6 +988,7 @@ function ProgressScreen({ catalog, progressVersion, onImport }: { catalog: Gener
 
   return (
     <div className="screen-stack">
+      <ProgressTransfer onImport={onImport} />
       {totalCompleted === 0 ? (
         <div className="progress-empty-state">
           <PianioMascot height={80} />
@@ -1023,8 +1005,6 @@ function ProgressScreen({ catalog, progressVersion, onImport }: { catalog: Gener
           </div>
           <div className="progress-actions">
             <a className="action-link primary" href={resumeTarget.href}>Continue practice</a>
-            <button className="action-link secondary" type="button" onClick={exportProgress}>Export</button>
-            <button className="action-link secondary" type="button" onClick={handleImport}>Import</button>
             <button
               className={`action-link secondary${confirmReset ? " danger" : ""}`}
               type="button"
@@ -1035,7 +1015,6 @@ function ProgressScreen({ catalog, progressVersion, onImport }: { catalog: Gener
             </button>
           </div>
         </div>
-        {importMsg && <p className="import-msg">{importMsg}</p>}
 
         <div className="progress-journey">
           <div className="journey-bar">

@@ -158,57 +158,27 @@ export function resetProgress(): void {
 }
 
 // ── Export / Import ───────────────────────────────────────────
-export interface ProgressExport {
-  version: 1;
-  exportedAt: string;
-  completed: string[];
-  stars: Record<string, 1 | 2 | 3>;
-  streakDates: string[];
-}
-
-export function exportProgress(): void {
-  const data: ProgressExport = {
-    version: 1,
-    exportedAt: new Date().toISOString(),
-    completed: (() => {
-      try { return JSON.parse(localStorage.getItem(STORAGE_KEY) ?? "[]") as string[]; }
-      catch { return []; }
-    })(),
-    stars: (() => {
-      try { return JSON.parse(localStorage.getItem(STARS_KEY) ?? "{}") as Record<string, 1 | 2 | 3>; }
-      catch { return {}; }
-    })(),
-    streakDates: (() => {
-      try { return JSON.parse(localStorage.getItem(STREAK_KEY) ?? "[]") as string[]; }
-      catch { return []; }
-    })(),
-  };
-  const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = `pianio-progress-${new Date().toISOString().slice(0, 10)}.json`;
-  document.body.appendChild(a);
-  a.click();
-  document.body.removeChild(a);
-  URL.revokeObjectURL(url);
-}
-
-export function importProgress(json: string): { ok: boolean; message: string } {
-  let data: unknown;
-  try { data = JSON.parse(json); } catch { return { ok: false, message: "Invalid JSON file." }; }
-
-  if (!data || typeof data !== "object" || (data as ProgressExport).version !== 1) {
-    return { ok: false, message: "Unrecognised format — expected a Pianio progress export." };
-  }
-
-  const p = data as ProgressExport;
+export function exportProgress(): boolean {
   try {
-    if (Array.isArray(p.completed)) localStorage.setItem(STORAGE_KEY, JSON.stringify(p.completed));
-    if (p.stars && typeof p.stars === "object") localStorage.setItem(STARS_KEY, JSON.stringify(p.stars));
-    if (Array.isArray(p.streakDates)) localStorage.setItem(STREAK_KEY, JSON.stringify(p.streakDates));
-    return { ok: true, message: `Imported ${p.completed?.length ?? 0} completed exercises.` };
+    // Preserve raw collections in the downloaded file, even if a future validator rejects them.
+    const data = {
+      version: 1,
+      exportedAt: new Date().toISOString(),
+      completed: JSON.parse(localStorage.getItem(STORAGE_KEY) ?? "[]"),
+      stars: JSON.parse(localStorage.getItem(STARS_KEY) ?? "{}"),
+      streakDates: JSON.parse(localStorage.getItem(STREAK_KEY) ?? "[]"),
+    };
+    const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `pianio-progress-${new Date().toISOString().replace(/[:.]/g, "-")}.json`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 60_000);
+    return true;
   } catch {
-    return { ok: false, message: "Failed to write to localStorage." };
+    return false;
   }
 }
